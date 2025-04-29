@@ -83,6 +83,13 @@
 			<artifactId>reactor-core</artifactId>
 		</dependency>
 
+		<!-- Veoci customization: McpServerSession carries a Spring Security Authentication -->
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-core</artifactId>
+			<version>${springframework.version}</version>
+		</dependency>
+
 
 		<!-- Used by the HttpServletSseServerTransport -->
 		<dependency>
