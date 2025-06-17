@@ -136,6 +136,10 @@ public class McpServerSession implements McpLoggableSession {
 		return authentication;
 	}
 
+	public McpServerTransport getTransport() {
+		return transport;
+	}
+
 	/**
 	 * Called upon successful initialization sequence between the client and the server
 	 * with the client capabilities and information.
