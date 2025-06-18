@@ -52,6 +52,10 @@ public class McpServerSession implements McpSession {
 
 	private Authentication authentication;
 
+	private boolean proxySession = false;
+
+	boolean isExchangeEmitted = false;
+
 	private static final int STATE_UNINITIALIZED = 0;
 
 	private static final int STATE_INITIALIZING = 1;
@@ -105,6 +109,14 @@ public class McpServerSession implements McpSession {
 
 	public McpServerTransport getTransport() {
 		return transport;
+	}
+
+	public boolean isProxySession() {
+		return proxySession;
+	}
+
+	public void setProxySession(boolean proxySession) {
+		this.proxySession = proxySession;
 	}
 
 	/**
@@ -240,6 +252,11 @@ public class McpServerSession implements McpSession {
 									error.message(), error.data())));
 				}
 
+				if (proxySession && !isExchangeEmitted) {
+					exchangeSink
+						.tryEmitValue(new McpAsyncServerExchange(this, clientCapabilities.get(), clientInfo.get()));
+					isExchangeEmitted = true;
+				}
 				resultMono = this.exchangeSink.asMono().flatMap(exchange -> handler.handle(exchange, request.params()));
 			}
 			return resultMono
@@ -261,6 +278,7 @@ public class McpServerSession implements McpSession {
 			if (McpSchema.METHOD_NOTIFICATION_INITIALIZED.equals(notification.method())) {
 				this.state.lazySet(STATE_INITIALIZED);
 				exchangeSink.tryEmitValue(new McpAsyncServerExchange(this, clientCapabilities.get(), clientInfo.get()));
+				isExchangeEmitted = true;
 				return this.initNotificationHandler.handle();
 			}
 
