@@ -213,8 +213,14 @@ public class McpServerSession implements McpSession {
 				// happening first
 				logger.debug("Received notification: {}", notification);
 				// TODO: in case of error, should the POST request be signalled?
-				return handleIncomingNotification(notification)
-					.doOnError(error -> logger.error("Error handling notification: {}", error.getMessage()));
+				if (proxySession) {
+					logger.debug("Sending notification to original server via proxy: {}", notification);
+					return this.transport.sendMessage(notification).then(Mono.empty());
+				}
+				else {
+					return handleIncomingNotification(notification)
+						.doOnError(error -> logger.error("Error handling notification: {}", error.getMessage()));
+				}
 			}
 			else {
 				logger.warn("Received unknown message type: {}", message);
