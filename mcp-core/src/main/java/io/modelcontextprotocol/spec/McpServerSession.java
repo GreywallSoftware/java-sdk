@@ -137,6 +137,7 @@ public class McpServerSession implements McpLoggableSession {
 	 * security config
 	 * @return Authentication
 	 */
+	@Override
 	public Authentication getAuthentication() {
 		return authentication;
 	}
