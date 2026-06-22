@@ -53,11 +53,11 @@ public class DefaultMcpStreamableServerSessionFactory implements McpStreamableSe
 	}
 
 	/**
-	 * Veoci customization (multi-instance): create a proxy session for an existing session
-	 * id without an initialize handshake. Reuses the same request/notification handlers as
-	 * a normal session, with null client capabilities/info (the proxy never saw the
-	 * client's initialize). Tool handlers run identically; they do not depend on client
-	 * capabilities.
+	 * Veoci customization (multi-instance): create a proxy session for an existing
+	 * session id without an initialize handshake. Reuses the same request/notification
+	 * handlers as a normal session, with null client capabilities/info (the proxy never
+	 * saw the client's initialize). Tool handlers run identically; they do not depend on
+	 * client capabilities.
 	 */
 	@Override
 	public McpStreamableServerSession createProxySession(String sessionId) {

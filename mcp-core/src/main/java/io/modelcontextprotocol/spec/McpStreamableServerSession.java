@@ -80,8 +80,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	private static final int MAX_TRACKED_STREAMS = 8;
 
 	/**
-	 * Veoci resumability: registry of recent listening streams keyed by their transport id
-	 * (the first component of every event id). A client reconnecting with a
+	 * Veoci resumability: registry of recent listening streams keyed by their transport
+	 * id (the first component of every event id). A client reconnecting with a
 	 * {@code Last-Event-Id} is replayed from the matching stream. Bounded so memory stays
 	 * flat over a long session. Only listening (GET) streams are registered; short-lived
 	 * per-request POST streams are not replayable.
@@ -102,8 +102,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	 * does not own the original session, to serve a request that was routed there without
 	 * sticky load-balancing. Mirrors {@link McpServerSession#isProxySession()}. A proxy
 	 * session handles the request locally and replies on the caller's own connection (for
-	 * Streamable HTTP the response is not a separate stream, so — unlike SSE — nothing has
-	 * to be forwarded back to the owner for a tool call).
+	 * Streamable HTTP the response is not a separate stream, so — unlike SSE — nothing
+	 * has to be forwarded back to the owner for a tool call).
 	 */
 	private boolean proxySession = false;
 
@@ -235,8 +235,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	/**
 	 * Veoci resumability: replay the events a client missed on a stream that dropped,
 	 * identified by the {@code Last-Event-Id} it last received. Returns the bare messages
-	 * (event ids are dropped); prefer {@link #replayEvents(Object)} when the original event
-	 * ids must be preserved on the wire (the Veoci WebMVC transport does this).
+	 * (event ids are dropped); prefer {@link #replayEvents(Object)} when the original
+	 * event ids must be preserved on the wire (the Veoci WebMVC transport does this).
 	 * @param lastEventId the last event id the client received, of the form
 	 * {@code <transportId>_<sequence>}
 	 * @return the missed messages in order, or empty if nothing can be replayed
@@ -251,10 +251,11 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	}
 
 	/**
-	 * Veoci resumability: like {@link #replay(Object)} but preserves each event's original
-	 * id so the transport can re-send it under the same SSE {@code id:} the client already
-	 * tracked. Replay is scoped to the stream encoded in {@code lastEventId}; only
-	 * listening streams are retained (see {@link #trackedStreams}).
+	 * Veoci resumability: like {@link #replay(Object)} but preserves each event's
+	 * original id so the transport can re-send it under the same SSE {@code id:} the
+	 * client already tracked. Replay is scoped to the stream encoded in
+	 * {@code lastEventId}; only listening streams are retained (see
+	 * {@link #trackedStreams}).
 	 * @param lastEventId the last event id the client received, of the form
 	 * {@code <transportId>_<sequence>}
 	 * @return the missed events (id + message) in order, or empty if nothing can be
@@ -440,13 +441,13 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		McpStreamableServerSessionInit startSession(McpSchema.InitializeRequest initializeRequest);
 
 		/**
-		 * Veoci customization (multi-instance): create a proxy session bound to an existing
-		 * session id, without re-running the {@code initialize} handshake. Used by an
-		 * instance that receives a request for a session it does not hold (no sticky
-		 * load-balancing) so it can handle the request locally and reply on the caller's
-		 * own connection. The session carries default (empty) client capabilities; the
-		 * Spring {@code Authentication} is captured from the calling thread, exactly like
-		 * the SSE proxy session.
+		 * Veoci customization (multi-instance): create a proxy session bound to an
+		 * existing session id, without re-running the {@code initialize} handshake. Used
+		 * by an instance that receives a request for a session it does not hold (no
+		 * sticky load-balancing) so it can handle the request locally and reply on the
+		 * caller's own connection. The session carries default (empty) client
+		 * capabilities; the Spring {@code Authentication} is captured from the calling
+		 * thread, exactly like the SSE proxy session.
 		 * @param sessionId the existing session id supplied by the client
 		 * @return a proxy session ready to handle requests/notifications locally
 		 */
@@ -466,8 +467,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	}
 
 	/**
-	 * Veoci resumability: an outbound event retained for replay — its SSE event id and the
-	 * JSON-RPC message that was sent to the client.
+	 * Veoci resumability: an outbound event retained for replay — its SSE event id and
+	 * the JSON-RPC message that was sent to the client.
 	 *
 	 * @param eventId the SSE event id ({@code <transportId>_<sequence>})
 	 * @param message the JSON-RPC message that was sent to the client
@@ -495,8 +496,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		private final AtomicLong eventSequence = new AtomicLong(0);
 
 		/**
-		 * Veoci resumability: bounded, ordered history of events sent on this stream, keyed
-		 * by sequence number. Capped at {@link #MAX_EVENTS_PER_STREAM}.
+		 * Veoci resumability: bounded, ordered history of events sent on this stream,
+		 * keyed by sequence number. Capped at {@link #MAX_EVENTS_PER_STREAM}.
 		 */
 		private final NavigableMap<Long, McpSchema.JSONRPCMessage> eventLog = new ConcurrentSkipListMap<>();
 
@@ -540,7 +541,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		private List<EventMessage> eventsAfter(long lastSequence) {
 			List<EventMessage> events = new ArrayList<>();
 			this.eventLog.tailMap(lastSequence, false)
-				.forEach((sequence, message) -> events.add(new EventMessage(this.transportId + "_" + sequence, message)));
+				.forEach((sequence, message) -> events
+					.add(new EventMessage(this.transportId + "_" + sequence, message)));
 			return events;
 		}
 
@@ -557,10 +559,10 @@ public class McpStreamableServerSession implements McpLoggableSession {
 
 		/**
 		 * Veoci customization: per-request and listening SSE streams expose the same
-		 * captured authentication as their owning session. A request-specific stream backs
-		 * the exchange handed to tool handlers (see
-		 * {@link McpStreamableServerSession#responseStream}), so the auth must be reachable
-		 * through it.
+		 * captured authentication as their owning session. A request-specific stream
+		 * backs the exchange handed to tool handlers (see
+		 * {@link McpStreamableServerSession#responseStream}), so the auth must be
+		 * reachable through it.
 		 */
 		@Override
 		public Authentication getAuthentication() {
