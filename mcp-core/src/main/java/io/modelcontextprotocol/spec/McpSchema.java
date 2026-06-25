@@ -1400,6 +1400,24 @@ public final class McpSchema {
 		@JsonProperty("annotations") ToolAnnotations annotations,
 		@JsonProperty("_meta") Map<String, Object> meta) { // @formatter:on
 
+		/**
+		 * Veoci customization: backwards-compatible
+		 * {@code Tool(name, description, inputSchema)} constructor matching the older MCP
+		 * SDK signature. Spring AI's {@code McpToolUtils} (the version in use) calls this
+		 * 3-arg constructor when converting tool callbacks; v0.18.2 turned {@code Tool}
+		 * into a record without it, which caused a runtime {@code NoSuchMethodError} in
+		 * both the SSE auto-configuration and any other caller. Delegates to the
+		 * canonical constructor, parsing the JSON schema string with the default JSON
+		 * mapper.
+		 * @param name the tool name
+		 * @param description the tool description
+		 * @param schema the JSON-schema string for the tool's input
+		 */
+		public Tool(String name, String description, String schema) {
+			this(name, null, description, parseSchema(io.modelcontextprotocol.json.McpJsonDefaults.getMapper(), schema),
+					null, null, null);
+		}
+
 		public static Builder builder() {
 			return new Builder();
 		}

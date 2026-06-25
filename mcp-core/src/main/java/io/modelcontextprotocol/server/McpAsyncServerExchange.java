@@ -17,6 +17,7 @@ import io.modelcontextprotocol.spec.McpSchema.LoggingMessageNotification;
 import io.modelcontextprotocol.spec.McpServerSession;
 import io.modelcontextprotocol.spec.McpSession;
 import io.modelcontextprotocol.util.Assert;
+import org.springframework.security.core.Authentication;
 import reactor.core.publisher.Mono;
 
 /**
@@ -93,6 +94,20 @@ public class McpAsyncServerExchange {
 
 	public McpServerSession getSession() {
 		return (McpServerSession) session;
+	}
+
+	/**
+	 * Veoci customization: retrieve the Spring Security {@link Authentication} captured
+	 * on the backing session, irrespective of the transport (SSE {@link McpServerSession}
+	 * or Streamable HTTP
+	 * {@link io.modelcontextprotocol.spec.McpStreamableServerSession}). Prefer this over
+	 * {@link #getSession()} when only the caller identity is needed, since
+	 * {@code getSession()} casts to {@link McpServerSession} and would fail with a
+	 * {@link ClassCastException} for Streamable HTTP sessions.
+	 * @return the captured authentication, or {@code null} if none was captured
+	 */
+	public Authentication getAuthentication() {
+		return this.session.getAuthentication();
 	}
 
 	/**

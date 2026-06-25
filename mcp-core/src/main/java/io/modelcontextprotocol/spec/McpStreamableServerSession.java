@@ -5,15 +5,22 @@
 package io.modelcontextprotocol.spec;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import io.modelcontextprotocol.json.TypeRef;
 
@@ -60,6 +67,46 @@ public class McpStreamableServerSession implements McpLoggableSession {
 
 	private final MissingMcpTransportSession missingMcpTransportSession;
 
+	/**
+	 * Veoci resumability: maximum number of recent events retained per stream for
+	 * {@code Last-Event-Id} replay. Bounds memory for long-lived listening streams.
+	 */
+	private static final int MAX_EVENTS_PER_STREAM = 1024;
+
+	/**
+	 * Veoci resumability: maximum number of recent listening streams whose history is
+	 * retained for replay after they disconnect. Eldest are evicted.
+	 */
+	private static final int MAX_TRACKED_STREAMS = 8;
+
+	/**
+	 * Veoci resumability: registry of recent listening streams keyed by their transport
+	 * id (the first component of every event id). A client reconnecting with a
+	 * {@code Last-Event-Id} is replayed from the matching stream. Bounded so memory stays
+	 * flat over a long session. Only listening (GET) streams are registered; short-lived
+	 * per-request POST streams are not replayable.
+	 */
+	private final Map<String, McpStreamableServerSessionStream> trackedStreams = Collections
+		.synchronizedMap(new LinkedHashMap<>());
+
+	/**
+	 * Veoci customization: Spring Security authentication captured at session creation
+	 * time (the initialize request thread, where Spring Security filters have populated
+	 * the {@code SecurityContextHolder}). Mirrors the SSE {@link McpServerSession}
+	 * behaviour so tool handlers can recover the caller identity.
+	 */
+	private final Authentication authentication;
+
+	/**
+	 * Veoci customization (multi-instance): marks a session created on an instance that
+	 * does not own the original session, to serve a request that was routed there without
+	 * sticky load-balancing. Mirrors {@link McpServerSession#isProxySession()}. A proxy
+	 * session handles the request locally and replies on the caller's own connection (for
+	 * Streamable HTTP the response is not a separate stream, so — unlike SSE — nothing
+	 * has to be forwarded back to the owner for a tool call).
+	 */
+	private boolean proxySession = false;
+
 	private volatile McpSchema.LoggingLevel minLoggingLevel = McpSchema.LoggingLevel.INFO;
 
 	/**
@@ -84,6 +131,34 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		this.requestTimeout = requestTimeout;
 		this.requestHandlers = requestHandlers;
 		this.notificationHandlers = notificationHandlers;
+		this.authentication = SecurityContextHolder.getContext().getAuthentication();
+	}
+
+	/**
+	 * Veoci customization: retrieve the Spring Security {@link Authentication} captured
+	 * when this Streamable HTTP session was created.
+	 * @return the captured authentication, or {@code null} if none was present
+	 */
+	@Override
+	public Authentication getAuthentication() {
+		return this.authentication;
+	}
+
+	/**
+	 * Veoci customization: whether this is a proxy session (see {@link #proxySession}).
+	 * @return {@code true} if this session was created to serve a request routed to a
+	 * non-owning instance
+	 */
+	public boolean isProxySession() {
+		return this.proxySession;
+	}
+
+	/**
+	 * Veoci customization: mark this session as a proxy session.
+	 * @param proxySession {@code true} to mark as a proxy session
+	 */
+	public void setProxySession(boolean proxySession) {
+		this.proxySession = proxySession;
 	}
 
 	@Override
@@ -141,13 +216,76 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	public McpStreamableServerSessionStream listeningStream(McpStreamableServerTransport transport) {
 		McpStreamableServerSessionStream listeningStream = new McpStreamableServerSessionStream(transport);
 		this.listeningStreamRef.set(listeningStream);
+		// Veoci resumability: track the listening stream (bounded) so a later reconnect
+		// carrying a Last-Event-Id can be replayed from its retained history.
+		synchronized (this.trackedStreams) {
+			this.trackedStreams.put(listeningStream.getTransportId(), listeningStream);
+			while (this.trackedStreams.size() > MAX_TRACKED_STREAMS) {
+				var eldest = this.trackedStreams.keySet().iterator();
+				if (!eldest.hasNext()) {
+					break;
+				}
+				eldest.next();
+				eldest.remove();
+			}
+		}
 		return listeningStream;
 	}
 
-	// TODO: keep track of history by keeping a map from eventId to stream and then
-	// iterate over the events using the lastEventId
+	/**
+	 * Veoci resumability: replay the events a client missed on a stream that dropped,
+	 * identified by the {@code Last-Event-Id} it last received. Returns the bare messages
+	 * (event ids are dropped); prefer {@link #replayEvents(Object)} when the original
+	 * event ids must be preserved on the wire (the Veoci WebMVC transport does this).
+	 * @param lastEventId the last event id the client received, of the form
+	 * {@code <transportId>_<sequence>}
+	 * @return the missed messages in order, or empty if nothing can be replayed
+	 */
 	public Flux<McpSchema.JSONRPCMessage> replay(Object lastEventId) {
-		return Flux.empty();
+		List<EventMessage> events = replayEvents(lastEventId);
+		List<McpSchema.JSONRPCMessage> messages = new ArrayList<>(events.size());
+		for (EventMessage event : events) {
+			messages.add(event.message());
+		}
+		return Flux.fromIterable(messages);
+	}
+
+	/**
+	 * Veoci resumability: like {@link #replay(Object)} but preserves each event's
+	 * original id so the transport can re-send it under the same SSE {@code id:} the
+	 * client already tracked. Replay is scoped to the stream encoded in
+	 * {@code lastEventId}; only listening streams are retained (see
+	 * {@link #trackedStreams}).
+	 * @param lastEventId the last event id the client received, of the form
+	 * {@code <transportId>_<sequence>}
+	 * @return the missed events (id + message) in order, or empty if nothing can be
+	 * replayed (unknown/expired stream, unparseable id, or events already evicted)
+	 */
+	public List<EventMessage> replayEvents(Object lastEventId) {
+		if (lastEventId == null) {
+			return List.of();
+		}
+		String eventId = lastEventId.toString();
+		int separator = eventId.lastIndexOf('_');
+		if (separator < 0) {
+			logger.warn("Unparseable Last-Event-Id '{}' for session {}; skipping replay", eventId, this.id);
+			return List.of();
+		}
+		String transportId = eventId.substring(0, separator);
+		long lastSequence;
+		try {
+			lastSequence = Long.parseLong(eventId.substring(separator + 1));
+		}
+		catch (NumberFormatException e) {
+			logger.warn("Unparseable Last-Event-Id '{}' for session {}; skipping replay", eventId, this.id);
+			return List.of();
+		}
+		McpStreamableServerSessionStream stream = this.trackedStreams.get(transportId);
+		if (stream == null) {
+			logger.debug("No retained stream {} to replay for session {} (expired or unknown)", transportId, this.id);
+			return List.of();
+		}
+		return stream.eventsAfter(lastSequence);
 	}
 
 	/**
@@ -260,6 +398,7 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	public Mono<Void> closeGracefully() {
 		return Mono.defer(() -> {
 			McpLoggableSession listeningStream = this.listeningStreamRef.getAndSet(missingMcpTransportSession);
+			this.trackedStreams.clear();
 			return listeningStream.closeGracefully();
 			// TODO: Also close all the open streams
 		});
@@ -268,6 +407,7 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	@Override
 	public void close() {
 		McpLoggableSession listeningStream = this.listeningStreamRef.getAndSet(missingMcpTransportSession);
+		this.trackedStreams.clear();
 		if (listeningStream != null) {
 			listeningStream.close();
 		}
@@ -300,6 +440,19 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		 */
 		McpStreamableServerSessionInit startSession(McpSchema.InitializeRequest initializeRequest);
 
+		/**
+		 * Veoci customization (multi-instance): create a proxy session bound to an
+		 * existing session id, without re-running the {@code initialize} handshake. Used
+		 * by an instance that receives a request for a session it does not hold (no
+		 * sticky load-balancing) so it can handle the request locally and reply on the
+		 * caller's own connection. The session carries default (empty) client
+		 * capabilities; the Spring {@code Authentication} is captured from the calling
+		 * thread, exactly like the SSE proxy session.
+		 * @param sessionId the existing session id supplied by the client
+		 * @return a proxy session ready to handle requests/notifications locally
+		 */
+		McpStreamableServerSession createProxySession(String sessionId);
+
 	}
 
 	/**
@@ -314,6 +467,16 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	}
 
 	/**
+	 * Veoci resumability: an outbound event retained for replay — its SSE event id and
+	 * the JSON-RPC message that was sent to the client.
+	 *
+	 * @param eventId the SSE event id ({@code <transportId>_<sequence>})
+	 * @param message the JSON-RPC message that was sent to the client
+	 */
+	public record EventMessage(String eventId, McpSchema.JSONRPCMessage message) {
+	}
+
+	/**
 	 * An individual SSE stream within a Streamable HTTP context. Can be either the
 	 * listening GET SSE stream or a request-specific POST SSE stream.
 	 */
@@ -325,7 +488,18 @@ public class McpStreamableServerSession implements McpLoggableSession {
 
 		private final String transportId;
 
-		private final Supplier<String> uuidGenerator;
+		/**
+		 * Veoci resumability: monotonic per-stream event sequence. Combined with
+		 * {@link #transportId} it yields ordered, replayable event ids of the form
+		 * {@code <transportId>_<sequence>}.
+		 */
+		private final AtomicLong eventSequence = new AtomicLong(0);
+
+		/**
+		 * Veoci resumability: bounded, ordered history of events sent on this stream,
+		 * keyed by sequence number. Capped at {@link #MAX_EVENTS_PER_STREAM}.
+		 */
+		private final NavigableMap<Long, McpSchema.JSONRPCMessage> eventLog = new ConcurrentSkipListMap<>();
 
 		/**
 		 * Constructor accepting the dedicated transport representing the SSE stream.
@@ -333,10 +507,43 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		 */
 		public McpStreamableServerSessionStream(McpStreamableServerTransport transport) {
 			this.transport = transport;
+			// The first component of every event id identifies this stream, allowing
+			// constant-time lookup of its history during replay.
 			this.transportId = UUID.randomUUID().toString();
-			// This ID design allows for a constant-time extraction of the history by
-			// precisely identifying the SSE stream using the first component
-			this.uuidGenerator = () -> this.transportId + "_" + UUID.randomUUID();
+		}
+
+		String getTransportId() {
+			return this.transportId;
+		}
+
+		/**
+		 * Veoci resumability: record an outbound message in this stream's bounded history
+		 * and return the SSE event id to send it under. Oldest events are evicted beyond
+		 * {@link #MAX_EVENTS_PER_STREAM}.
+		 */
+		private String recordEvent(McpSchema.JSONRPCMessage message) {
+			long sequence = this.eventSequence.incrementAndGet();
+			this.eventLog.put(sequence, message);
+			while (this.eventLog.size() > MAX_EVENTS_PER_STREAM) {
+				var oldest = this.eventLog.firstEntry();
+				if (oldest == null) {
+					break;
+				}
+				this.eventLog.remove(oldest.getKey());
+			}
+			return this.transportId + "_" + sequence;
+		}
+
+		/**
+		 * Veoci resumability: return the events recorded after the given sequence number,
+		 * in order, each paired with its original event id.
+		 */
+		private List<EventMessage> eventsAfter(long lastSequence) {
+			List<EventMessage> events = new ArrayList<>();
+			this.eventLog.tailMap(lastSequence, false)
+				.forEach((sequence, message) -> events
+					.add(new EventMessage(this.transportId + "_" + sequence, message)));
+			return events;
 		}
 
 		@Override
@@ -350,6 +557,18 @@ public class McpStreamableServerSession implements McpLoggableSession {
 			return McpStreamableServerSession.this.isNotificationForLevelAllowed(loggingLevel);
 		}
 
+		/**
+		 * Veoci customization: per-request and listening SSE streams expose the same
+		 * captured authentication as their owning session. A request-specific stream
+		 * backs the exchange handed to tool handlers (see
+		 * {@link McpStreamableServerSession#responseStream}), so the auth must be
+		 * reachable through it.
+		 */
+		@Override
+		public Authentication getAuthentication() {
+			return McpStreamableServerSession.this.authentication;
+		}
+
 		@Override
 		public <T> Mono<T> sendRequest(String method, Object requestParams, TypeRef<T> typeRef) {
 			String requestId = McpStreamableServerSession.this.generateRequestId();
@@ -360,8 +579,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 				this.pendingResponses.put(requestId, sink);
 				McpSchema.JSONRPCRequest jsonrpcRequest = new McpSchema.JSONRPCRequest(McpSchema.JSONRPC_VERSION,
 						method, requestId, requestParams);
-				String messageId = this.uuidGenerator.get();
-				// TODO: store message in history
+				// Veoci resumability: record before sending so the event can be replayed.
+				String messageId = recordEvent(jsonrpcRequest);
 				this.transport.sendMessage(jsonrpcRequest, messageId).subscribe(v -> {
 				}, sink::error);
 			}).timeout(requestTimeout).doOnError(e -> {
@@ -386,8 +605,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		public Mono<Void> sendNotification(String method, Object params) {
 			McpSchema.JSONRPCNotification jsonrpcNotification = new McpSchema.JSONRPCNotification(
 					McpSchema.JSONRPC_VERSION, method, params);
-			String messageId = this.uuidGenerator.get();
-			// TODO: store message in history
+			// Veoci resumability: record before sending so the event can be replayed.
+			String messageId = recordEvent(jsonrpcNotification);
 			return this.transport.sendMessage(jsonrpcNotification, messageId);
 		}
 
