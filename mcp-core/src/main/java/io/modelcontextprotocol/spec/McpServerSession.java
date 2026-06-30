@@ -319,11 +319,7 @@ public class McpServerSession implements McpLoggableSession {
 				}
 
 				if (proxySession && !isExchangeEmitted) {
-					// Use the session-id-carrying constructor (same as the initialized-notification path
-					// below) so exchange.sessionId() returns this.id instead of null. A proxy session never
-					// runs the notifications/initialized path (notifications are forwarded to the owner), so
-					// this is its only exchange-emission site; the deprecated McpSession ctor left sessionId
-					// null, which broke session-keyed scope lookups ("no token scope on session") on proxies.
+					// Pass this.id via the id-carrying ctor; the deprecated one leaves sessionId null (breaks proxy-path scope lookups).
 					exchangeSink
 						.tryEmitValue(new McpAsyncServerExchange(this.id, this, clientCapabilities.get(), clientInfo.get(), transportContext));
 					isExchangeEmitted = true;
