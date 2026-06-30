@@ -319,9 +319,10 @@ public class McpServerSession implements McpLoggableSession {
 				}
 
 				if (proxySession && !isExchangeEmitted) {
-					// Pass this.id via the id-carrying ctor; the deprecated one leaves sessionId null (breaks proxy-path scope lookups).
-					exchangeSink
-						.tryEmitValue(new McpAsyncServerExchange(this.id, this, clientCapabilities.get(), clientInfo.get(), transportContext));
+					// Pass this.id so exchange.sessionId() isn't null on the proxy path
+					// (session-keyed scope lookups).
+					exchangeSink.tryEmitValue(new McpAsyncServerExchange(this.id, this, clientCapabilities.get(),
+							clientInfo.get(), transportContext));
 					isExchangeEmitted = true;
 				}
 				resultMono = this.exchangeSink.asMono()
